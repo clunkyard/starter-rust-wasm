@@ -168,7 +168,7 @@ pub struct AppliedV1 {
 }
 pub type Applied = AppliedV1;
 
-/// The scan that produced this tick's contacts: the one your previous act asked for. 32 bytes.
+/// The scan that produced this tick's contacts: where the scanner points now, after slewing toward your previous act's scan. 32 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScanV1 {
@@ -503,7 +503,7 @@ unsafe extern "C" {
     /// What this tick's act holds for a gun field so far, as set.
     #[link_name = "gun_get_power"]
     pub fn cy_gun_get_power(out: *mut f64) -> i32;
-    /// The scan that produced this tick's contacts.
+    /// The scan that produced this tick's contacts: where the scanner points now.
     #[link_name = "scanner_last_v1"]
     pub fn cy_scanner_last_v1(out: *mut ScanV1) -> i32;
     /// Robots this close are detected in any direction.
@@ -515,15 +515,21 @@ unsafe extern "C" {
     /// The widest arc that still reaches this far, by hello.formulas.arcForReach.
     #[link_name = "scanner_arc_for_reach"]
     pub fn cy_scanner_arc_for_reach(range: f64, out: *mut f64) -> i32;
-    /// Ask where the scanner points for the next state.
+    /// Ask the scanner to turn toward a direction for the next state; it slews at scanner.turnRate, and the arc changes at once.
     #[link_name = "scanner_heading"]
     pub fn cy_scanner_heading(value: f64) -> i32;
-    /// Ask where the scanner points for the next state.
+    /// Ask the scanner to turn toward a direction for the next state; it slews at scanner.turnRate, and the arc changes at once.
     #[link_name = "scanner_arc"]
     pub fn cy_scanner_arc(value: f64) -> i32;
-    /// Ask where the scanner points for the next state.
+    /// Ask the scanner to turn toward a direction for the next state; it slews at scanner.turnRate, and the arc changes at once.
     #[link_name = "scanner_pitch"]
     pub fn cy_scanner_pitch(value: f64) -> i32;
+    /// The scanner was on for the tick this state's contacts come from.
+    #[link_name = "scanner_is_on"]
+    pub fn cy_scanner_is_on(out: *mut i32) -> i32;
+    /// Switch the scanner on (1) or off (0) for this tick; it is on unless an act switches it off. Off, it still slews and re-arcs but sees no scan or faint contacts and shows no beam.
+    #[link_name = "scanner_on"]
+    pub fn cy_scanner_on(value: f64) -> i32;
     /// What this tick's act holds for a scanner field so far, as set.
     #[link_name = "scanner_get_heading"]
     pub fn cy_scanner_get_heading(out: *mut f64) -> i32;
@@ -533,6 +539,9 @@ unsafe extern "C" {
     /// What this tick's act holds for a scanner field so far, as set.
     #[link_name = "scanner_get_pitch"]
     pub fn cy_scanner_get_pitch(out: *mut f64) -> i32;
+    /// What this tick's act holds for a scanner field so far, as set.
+    #[link_name = "scanner_get_on"]
+    pub fn cy_scanner_get_on(out: *mut f64) -> i32;
     /// Every contact this tick: scan and proximity first, nearest first, then passive ones.
     #[link_name = "sensors_contacts_v1"]
     pub fn cy_sensors_contacts_v1(out: *mut ContactV1, capacity: u32, count: *mut u32) -> i32;
