@@ -26,6 +26,7 @@
 // arena: arena_size arena_gravity arena_terrain_kind arena_ground_height
 // me: me_health me_position me_velocity me_heading me_pitch me_roll
 //   me_angular_velocity me_attitude me_grounded me_altitude me_applied
+//   me_hull_mounts me_to_mount me_from_mount me_mount_toward
 // battery: battery_charge battery_capacity battery_regen
 //   battery_sustainable_drive battery_compute battery_drive_cost
 // drive: drive_hover_lift drive_throttle drive_turn drive_pitch_turn
@@ -54,7 +55,8 @@
 //   nav_pickups nav_nearest_pickup nav_field_distance
 // score: score_me score_best score_armour
 // angles: angles_normalize angles_angle_diff angles_bearing_to
-//   angles_elevation_to angles_direction angles_distance angles_clamp
+//   angles_elevation_to angles_direction angles_distance angles_to_chassis
+//   angles_from_chassis angles_clamp
 // status: status_text status_value status_get_text status_get_value
 // raw: raw_number raw_text raw_has raw_flag raw_count raw_line raw_extra
 // session: session_log
@@ -70,11 +72,16 @@ use clunkyard::*;
 const SEARCH_TURN: f64 = 0.33;
 /// How long to look again where a robot was last seen.
 const MEMORY_TICKS: i32 = 60;
+/// How long a dodge lasts: half a second.
+const DODGE_TICKS: i32 = 10;
 
 // A WebAssembly instance is one robot on one thread, so plain statics hold
 // what it remembers between turns.
 static mut FREE_FLIGHT: bool = false; // flying free, robots may be above or below
+static mut FORCES: bool = false; // the force rulesets: push the hull, not steer it
 static mut LAST_SLOT: i32 = 0; // the robot seen most recently, 0 for none yet
+static mut DODGE_UNTIL: i32 = 0; // the tick the dodge ends
+static mut DODGES: i32 = 0; // how many dodges so far
 
 // Each import writes its answer through a pointer and returns a status;
 // these read one, or give None when it is absent.
@@ -117,7 +124,11 @@ fn steer(throttle: f64, heading: f64, elevation: f64, gain: f64, me_heading: f64
 fn start() {
     let is_3d = get(cy_match_is_3d).unwrap_or(0) == 1;
     let gravity = get(cy_arena_gravity).unwrap_or_default();
-    unsafe { FREE_FLIGHT = is_3d && gravity.z == 0.0 };
+    let forces = get(cy_match_control).unwrap_or(0) == CY_CONTROL_FORCES;
+    unsafe {
+        FREE_FLIGHT = is_3d && gravity.z == 0.0;
+        FORCES = forces;
+    }
 }
 
 fn turn() {
@@ -149,7 +160,8 @@ fn turn() {
         }
         // The heaviest shot that still covers the range in about a second,
         // aimed where the target will be, lobbed under gravity; straight at
-        // it when no shot reaches it.
+        // it when no shot reaches it. The lead is the intercept if the target
+        // holds its course.
         let mut power = 1.0;
         unsafe { cy_gun_power_for_flight_time(target.range, 1.0, &mut power) };
         let mut aim = Solution::default();
@@ -200,6 +212,35 @@ fn turn() {
             cy_scanner_heading(scan.heading + 36.0);
             cy_scanner_arc(40.0);
             cy_scanner_pitch(if free_flight { ((tick / 10) % 3 - 1) as f64 * 35.0 } else { 0.0 });
+        }
+    }
+
+    // A simple dodge: vary it, or predict the shooter. A muzzle cue means a
+    // robot fired; for half a second swerve off the line of fire, left and
+    // right in turn. More cues than the array holds (CY_SHORT) count as none
+    // heard.
+    let mut cues = [Contact::default(); 8];
+    let mut count = 0;
+    if tick >= unsafe { DODGE_UNTIL }
+        && unsafe { cy_sensors_cues(cues.as_mut_ptr(), 8, &mut count) } == CY_OK
+        && cues[..count as usize].iter().any(|cue| cue.source == CY_SOURCE_MUZZLE)
+    {
+        unsafe {
+            DODGE_UNTIL = tick + DODGE_TICKS;
+            DODGES += 1;
+        }
+    }
+    if tick < unsafe { DODGE_UNTIL } {
+        // Turn is positive left, strafe positive right.
+        let side = if unsafe { DODGES } % 2 == 1 { 1.0 } else { -1.0 };
+        unsafe {
+            if FORCES {
+                cy_drive_throttle(0.5);
+                cy_drive_strafe(-side);
+            } else {
+                cy_drive_throttle(1.0);
+                cy_drive_turn(side);
+            }
         }
     }
 

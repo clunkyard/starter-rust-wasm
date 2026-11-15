@@ -368,6 +368,18 @@ unsafe extern "C" {
     /// What the previous tick applied to you.
     #[link_name = "me_applied_v1"]
     pub fn cy_me_applied_v1(out: *mut AppliedV1) -> i32;
+    /// Your turret and scanner are mounted on the hull: gun.aim, scanner.set, gun.aim_now and scanner.last are in your chassis frame, not world axes.
+    #[link_name = "me_hull_mounts"]
+    pub fn cy_me_hull_mounts(out: *mut i32) -> i32;
+    /// A world direction in the frame your mounts take: in your chassis frame (angles.to_chassis with me.attitude) when me.hull_mounts, unchanged otherwise.
+    #[link_name = "me_to_mount"]
+    pub fn cy_me_to_mount(heading: f64, pitch: f64, out: *mut Direction) -> i32;
+    /// A direction in your mounts' frame, such as gun.aim_now, in world axes: angles.from_chassis with me.attitude when me.hull_mounts, unchanged otherwise.
+    #[link_name = "me_from_mount"]
+    pub fn cy_me_from_mount(heading: f64, pitch: f64, out: *mut Direction) -> i32;
+    /// The direction from you to a point, in the frame your mounts take: me.to_mount of its bearing and elevation from you.
+    #[link_name = "me_mount_toward"]
+    pub fn cy_me_mount_toward(point: *const Vec3, out: *mut Direction) -> i32;
     /// Charge now, before this tick's regeneration and driving.
     #[link_name = "battery_charge"]
     pub fn cy_battery_charge(out: *mut f64) -> i32;
@@ -449,7 +461,7 @@ unsafe extern "C" {
     /// What this tick's act holds for a drive field so far, as set.
     #[link_name = "drive_get_brake"]
     pub fn cy_drive_get_brake(out: *mut f64) -> i32;
-    /// Where the turret points now; a shot leaves along it.
+    /// Where the turret points now, in your mounts' frame (me.from_mount gives world axes); a shot leaves along it.
     #[link_name = "gun_aim_now"]
     pub fn cy_gun_aim_now(out: *mut Direction) -> i32;
     /// Ticks until the gun can fire; 0 means it can fire this tick.
@@ -515,7 +527,7 @@ unsafe extern "C" {
     /// What this tick's act holds for a gun field so far, as set.
     #[link_name = "gun_get_power"]
     pub fn cy_gun_get_power(out: *mut f64) -> i32;
-    /// The scan that produced this tick's contacts: where the scanner points now.
+    /// The scan that produced this tick's contacts: where the scanner points now, in your mounts' frame.
     #[link_name = "scanner_last_v1"]
     pub fn cy_scanner_last_v1(out: *mut ScanV1) -> i32;
     /// Robots this close are detected in any direction.
@@ -662,6 +674,12 @@ unsafe extern "C" {
     /// The straight-line distance between two points.
     #[link_name = "angles_distance"]
     pub fn cy_angles_distance(a: *const Vec3, b: *const Vec3, out: *mut f64) -> i32;
+    /// A world direction as a heading and pitch in a chassis frame: with d = direction(heading, pitch), the heading of (d·forward, d·right) and the pitch atan2(d·up, √((d·forward)² + (d·right)²)).
+    #[link_name = "angles_to_chassis_v1"]
+    pub fn cy_angles_to_chassis_v1(heading: f64, pitch: f64, attitude: *const AttitudeV1, out: *mut Direction) -> i32;
+    /// A chassis-frame heading h and pitch p in world axes: the direction of cos p cos h × forward + cos p sin h × right + sin p × up.
+    #[link_name = "angles_from_chassis_v1"]
+    pub fn cy_angles_from_chassis_v1(heading: f64, pitch: f64, attitude: *const AttitudeV1, out: *mut Direction) -> i32;
     /// A value held within low and high.
     #[link_name = "angles_clamp"]
     pub fn cy_angles_clamp(value: f64, low: f64, high: f64, out: *mut f64) -> i32;
@@ -724,6 +742,8 @@ pub use self::cy_nav_storm_v1 as cy_nav_storm;
 pub use self::cy_nav_hill_v1 as cy_nav_hill;
 pub use self::cy_nav_pickups_v1 as cy_nav_pickups;
 pub use self::cy_nav_nearest_pickup_v1 as cy_nav_nearest_pickup;
+pub use self::cy_angles_to_chassis_v1 as cy_angles_to_chassis;
+pub use self::cy_angles_from_chassis_v1 as cy_angles_from_chassis;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
