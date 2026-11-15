@@ -205,6 +205,18 @@ pub struct CueV1 {
 }
 pub type Cue = CueV1;
 
+/// One sighting of a robot, as the sensors measured it: no smoothing and no derived velocity. 48 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SightingV1 {
+    pub tick: i32,
+    pub source: i32,
+    pub bearing_error: f64,
+    pub range_error: f64,
+    pub position: Vec3,
+}
+pub type Sighting = SightingV1;
+
 /// Where to aim for a shot fired now to meet a target, and when it meets it. 24 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -473,10 +485,10 @@ unsafe extern "C" {
     /// The power whose shot covers this range in this time, within the legal powers.
     #[link_name = "gun_power_for_flight_time"]
     pub fn cy_gun_power_for_flight_time(range: f64, seconds: f64, out: *mut f64) -> i32;
-    /// The aim at which a shot fired now meets the contact if it holds its tracked velocity; absent when no shot reaches it.
+    /// The intercept if the contact holds its tracked velocity: the aim at which a shot fired now meets it then; absent when no shot reaches it. It is a starting point, and a target that turns, reverses or weaves beats it; for your own prediction, use lead_point.
     #[link_name = "gun_lead_v1"]
     pub fn cy_gun_lead_v1(contact: *const ContactV1, power: f64, out: *mut SolutionV1) -> i32;
-    /// The aim at which a shot fired now meets a point moving at this velocity; absent when no shot reaches it.
+    /// The intercept geometry for your own prediction: the aim at which a shot fired now meets a point that starts at this position and moves at this velocity; absent when no shot reaches it.
     #[link_name = "gun_lead_point_v1"]
     pub fn cy_gun_lead_point_v1(position: *const Vec3, velocity: *const Vec3, power: f64, out: *mut SolutionV1) -> i32;
     /// Ask the turret to turn toward a direction; it slews at gun.turnRate.
@@ -569,6 +581,9 @@ unsafe extern "C" {
     /// Where the robot was last seen, if it was.
     #[link_name = "tracker_position"]
     pub fn cy_tracker_position(slot: i32, out: *mut Vec3) -> i32;
+    /// The robot's last 32 precise sightings, oldest first, as measured: positions as the sensors placed them, with the errors they reported; empty when it has none. A gap in the ticks is a gap in the sightings, and a track restart does not clear them.
+    #[link_name = "tracker_history_v1"]
+    pub fn cy_tracker_history_v1(slot: i32, out: *mut SightingV1, capacity: u32, count: *mut u32) -> i32;
     /// The tick the robot was last seen, if it was.
     #[link_name = "tracker_last_seen"]
     pub fn cy_tracker_last_seen(slot: i32, out: *mut i32) -> i32;
@@ -703,6 +718,7 @@ pub use self::cy_sensors_cues_v1 as cy_sensors_cues;
 pub use self::cy_sensors_contact_v1 as cy_sensors_contact;
 pub use self::cy_sensors_position_of_v1 as cy_sensors_position_of;
 pub use self::cy_tracker_cue_v1 as cy_tracker_cue;
+pub use self::cy_tracker_history_v1 as cy_tracker_history;
 pub use self::cy_nav_zone_v1 as cy_nav_zone;
 pub use self::cy_nav_storm_v1 as cy_nav_storm;
 pub use self::cy_nav_hill_v1 as cy_nav_hill;
