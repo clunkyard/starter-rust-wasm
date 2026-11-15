@@ -2,7 +2,7 @@
 // robot core through the clunkyard.* imports in clunkyard.rs, next to this
 // file. It sweeps a medium scan to find a robot, narrows the scan to hold it,
 // leads it with shots whose power suits the range, fires only when the
-// turret is on target, keeps battery back for driving, looks again where it
+// turret is on target and its aim is earned, keeps battery back for driving, looks again where it
 // last saw one, follows a passive cue when it has nothing better and steps
 // out of the storm.
 //
@@ -11,7 +11,12 @@
 //   power    heavy shots hit harder for less battery, but fly slowly
 //   battery  shots and driving share it, and it refills slowly
 //   turret   it turns at a limited rate; cy_gun_aim_now is where it points now
-//   fuel     every import costs fuel, so read each fact once a turn
+//   fuel     every import costs fuel, and a byte it copies costs one, so
+//            read each fact once a turn and keep your own short memory
+//            rather than copying the Tracker's whole history every turn
+// Bearing is earned: a scan contact's bearing is off by up to its
+// bearing_error degrees (a fixed share of the arc), so a wide beam finds a
+// robot and a narrow one aims at it. Contacts within 120 units are exact.
 // A cue (cy_tracker_cue) says roughly where a robot is, within its
 // bearing_error degrees: good for where to look, not where to shoot.
 // Clunkyard WebAssembly ABI 4: the robot calls the core through imports
@@ -74,6 +79,18 @@ const SEARCH_TURN: f64 = 0.33;
 const MEMORY_TICKS: i32 = 60;
 /// How long a dodge lasts: half a second.
 const DODGE_TICKS: i32 = 10;
+/// Degrees: sweeps the circle in half a second.
+const SEARCH_ARC: f64 = 40.0;
+/// Units across at the target: it stays in the beam from tick to tick.
+const HOLD_WIDTH: f64 = 60.0;
+/// Degrees: the narrowest the beam holds.
+const MIN_ARC: f64 = 6.0;
+/// Ticks of sightings the aim averages.
+const WINDOW: i32 = 12;
+/// Narrow sightings in the window before a shot.
+const SIGHTINGS: usize = 8;
+/// Ticks between looks around the target, for a nearer robot.
+const LOOK_EVERY: i32 = 40;
 
 // A WebAssembly instance is one robot on one thread, so plain statics hold
 // what it remembers between turns.
@@ -82,6 +99,20 @@ static mut FORCES: bool = false; // the force rulesets: push the hull, not steer
 static mut LAST_SLOT: i32 = 0; // the robot seen most recently, 0 for none yet
 static mut DODGE_UNTIL: i32 = 0; // the tick the dodge ends
 static mut DODGES: i32 = 0; // how many dodges so far
+static mut TICK_RATE: i32 = 0; // ticks a second
+static mut CUES: [Contact; 8] = [Contact { slot: 0, source: 0, range: 0.0, bearing: 0.0, elevation: 0.0, bearing_error: 0.0, range_error: 0.0, position: Vec3 { x: 0.0, y: 0.0, z: 0.0 } }; 8]; // the cues heard, kept so no turn pays to clear them
+// The target's last WINDOW sightings, kept here: cy_tracker_history would
+// copy all 32 of its sightings, 48 bytes each, into the turn's fuel.
+#[derive(Clone, Copy)]
+struct Seen {
+    tick: i32,
+    error: f64,
+    position: Vec3,
+}
+static mut RING: [Seen; WINDOW as usize] = [Seen { tick: 0, error: 0.0, position: Vec3 { x: 0.0, y: 0.0, z: 0.0 } }; WINDOW as usize];
+static mut RING_SLOT: i32 = 0; // the robot the ring holds
+static mut RING_NEXT: usize = 0;
+static mut RING_COUNT: usize = 0;
 
 // Each import writes its answer through a pointer and returns a status;
 // these read one, or give None when it is absent.
@@ -121,7 +152,77 @@ fn steer(throttle: f64, heading: f64, elevation: f64, gain: f64, me_heading: f64
     }
 }
 
+/// The angle in degrees of a beam HOLD_WIDTH across at this range: atan by a rational fit, with no libm.
+fn hold_arc(range: f64) -> f64 {
+    let x = HOLD_WIDTH / 2.0 / range;
+    let flip = x > 1.0;
+    let x = if flip { 1.0 / x } else { x };
+    let angle = x / (1.0 + 0.28125 * x * x);
+    2.0 * (if flip { core::f64::consts::FRAC_PI_2 - angle } else { angle }) * 57.29578
+}
+
+/// Remembers a sighting of the target, starting again when the target changes.
+fn remember(target: &Contact, tick: i32) {
+    unsafe {
+        if target.slot != RING_SLOT {
+            RING_SLOT = target.slot;
+            RING_NEXT = 0;
+            RING_COUNT = 0;
+        }
+        RING[RING_NEXT] = Seen { tick, error: target.bearing_error, position: target.position };
+        RING_NEXT = (RING_NEXT + 1) % WINDOW as usize;
+        if RING_COUNT < WINDOW as usize {
+            RING_COUNT += 1;
+        }
+    }
+}
+
+/// A straight line through the narrowest of the last WINDOW ticks' sightings:
+/// where the robot is now and how fast it moves. Each sighting is off by its
+/// bearing_error; the line averages that out. Ordinary least squares, with
+/// time counted back from now so the line's value at now is its intercept.
+/// Gives the position, the velocity and how many sightings it used.
+fn fit(tick: i32) -> Option<(Vec3, Vec3, usize)> {
+    let ring = unsafe { &*core::ptr::addr_of!(RING) };
+    let recent = &ring[..unsafe { RING_COUNT }];
+    // The window's sightings, noting the sharpest.
+    let mut best = f64::MAX;
+    for s in recent.iter().filter(|s| s.tick > tick - WINDOW) {
+        if s.error < best {
+            best = s.error;
+        }
+    }
+    let (mut n, mut st, mut stt) = (0.0, 0.0, 0.0);
+    let (mut sx, mut sy, mut sz, mut stx, mut sty, mut stz) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let widest = 1.5 * best;
+    for s in recent.iter().filter(|s| s.tick > tick - WINDOW) {
+        if s.error > widest {
+            continue; // a look's wide sighting drops out
+        }
+        let dt = (s.tick - tick) as f64;
+        n += 1.0;
+        st += dt;
+        stt += dt * dt;
+        sx += s.position.x;
+        sy += s.position.y;
+        sz += s.position.z;
+        stx += dt * s.position.x;
+        sty += dt * s.position.y;
+        stz += dt * s.position.z;
+    }
+    if n < 2.0 {
+        return None;
+    }
+    let spread = n * stt - st * st;
+    let rate = unsafe { TICK_RATE } as f64;
+    let (kx, ky, kz) = ((n * stx - st * sx) / spread, (n * sty - st * sy) / spread, (n * stz - st * sz) / spread);
+    let position = Vec3 { x: (sx - kx * st) / n, y: (sy - ky * st) / n, z: (sz - kz * st) / n };
+    let velocity = Vec3 { x: kx * rate, y: ky * rate, z: kz * rate };
+    Some((position, velocity, n as usize))
+}
+
 fn start() {
+    unsafe { TICK_RATE = get(cy_match_tick_rate).unwrap_or(0) };
     let is_3d = get(cy_match_is_3d).unwrap_or(0) == 1;
     let gravity = get(cy_arena_gravity).unwrap_or_default();
     let forces = get(cy_match_control).unwrap_or(0) == CY_CONTROL_FORCES;
@@ -153,19 +254,38 @@ fn turn() {
         unsafe { LAST_SLOT = target.slot };
         let throttle = if target.range > 350.0 { 0.7 } else if target.range < 200.0 { -0.4 } else { 0.2 };
         steer(throttle, target.bearing, target.elevation, 45.0, heading, pitch);
+        // Halve the beam each tick until it is HOLD_WIDTH across at the target:
+        // narrow enough for a precise bearing, wide enough to keep it in. Every
+        // LOOK_EVERY ticks widen it for a tick, so a nearer robot can be found.
+        let hold = hold_arc(target.range).max(MIN_ARC);
+        let last_arc = get(cy_scanner_last).unwrap_or_default().arc;
+        let arc = if tick % LOOK_EVERY == 0 { SEARCH_ARC } else { hold.max(SEARCH_ARC.min(last_arc / 2.0)) };
         unsafe {
-            cy_scanner_heading(target.bearing); // narrow: holds it, reaching about 735
-            cy_scanner_arc(20.0);
+            cy_scanner_heading(target.bearing);
+            cy_scanner_arc(arc);
             cy_scanner_pitch(target.elevation);
         }
         // The heaviest shot that still covers the range in about a second,
         // aimed where the target will be, lobbed under gravity; straight at
-        // it when no shot reaches it. The lead is the intercept if the target
-        // holds its course.
+        // it when no shot reaches it. An exact contact: cy_gun_lead is the
+        // intercept if the target holds its course. A noisy one: lead the
+        // fitted line, and fire only once it rests on enough sightings.
         let mut power = 1.0;
         unsafe { cy_gun_power_for_flight_time(target.range, 1.0, &mut power) };
         let mut aim = Solution::default();
-        if unsafe { cy_gun_lead(&target, power, &mut aim) } != CY_OK {
+        let (mut found, mut ready) = (false, true);
+        if target.bearing_error > 0.0 {
+            remember(&target, tick);
+            if let Some((position, velocity, used)) = fit(tick) {
+                found = unsafe { cy_gun_lead_point(&position, &velocity, power, &mut aim) } == CY_OK;
+                ready = found && used >= SIGHTINGS;
+            } else {
+                ready = false;
+            }
+        } else {
+            found = unsafe { cy_gun_lead(&target, power, &mut aim) } == CY_OK;
+        }
+        if !found {
             aim = Solution { heading: target.bearing, pitch: target.elevation, time: 0.0 };
         }
         let mut can_fire = 0;
@@ -176,7 +296,7 @@ fn turn() {
         }
         let now = get(cy_gun_aim_now).unwrap_or_default();
         let on_target = angle_diff(aim.heading, now.heading).abs() < 3.0 && (aim.pitch - now.pitch).abs() < 3.0;
-        if on_target && can_fire == 1 {
+        if ready && on_target && can_fire == 1 {
             unsafe {
                 cy_gun_fire();
                 cy_gun_power(power);
@@ -219,7 +339,7 @@ fn turn() {
     // robot fired; for half a second swerve off the line of fire, left and
     // right in turn. More cues than the array holds (CY_SHORT) count as none
     // heard.
-    let mut cues = [Contact::default(); 8];
+    let cues = unsafe { &mut *core::ptr::addr_of_mut!(CUES) };
     let mut count = 0;
     if tick >= unsafe { DODGE_UNTIL }
         && unsafe { cy_sensors_cues(cues.as_mut_ptr(), 8, &mut count) } == CY_OK
