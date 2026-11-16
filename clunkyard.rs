@@ -695,6 +695,9 @@ unsafe extern "C" {
     /// What this tick's act holds for the status line so far, as set.
     #[link_name = "status_get_value"]
     pub fn cy_status_get_value(out: *mut f64) -> i32;
+    /// Adds a line to this tick's act for your trace; the first four of a turn are kept and later ones dropped. Unlike session.log, the arena keeps it.
+    #[link_name = "debug_log"]
+    pub fn cy_debug_log(line: *const u8, line_length: u32) -> i32;
     /// The number at a path, if there is one.
     #[link_name = "raw_number"]
     pub fn cy_raw_number(path: *const u8, path_length: u32, out: *mut f64) -> i32;
@@ -713,7 +716,7 @@ unsafe extern "C" {
     /// The last line the session read: the hello, or the latest state.
     #[link_name = "raw_line"]
     pub fn cy_raw_line(buf: *mut u8, capacity: u32, length: *mut u32) -> i32;
-    /// Adds fields the API does not cover to this tick's act; a key the API writes (v, type, tick, drive, forces, aim, scan, fire, status) is refused with E_ARGUMENT.
+    /// Adds fields the API does not cover to this tick's act; a key the API writes (v, type, tick, drive, forces, aim, scan, fire, status, log) is refused with E_ARGUMENT.
     #[link_name = "raw_extra"]
     pub fn cy_raw_extra(json: *const u8, json_length: u32) -> i32;
     /// Writes a line to standard error, never to the protocol.
