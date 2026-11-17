@@ -217,6 +217,18 @@ pub struct SightingV1 {
 }
 pub type Sighting = SightingV1;
 
+/// How far your edge is from the walls, from your position, your radius and the arena size. 56 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WallMarginV1 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub nearest: f64,
+    pub normal: Vec3,
+}
+pub type WallMargin = WallMarginV1;
+
 /// Where to aim for a shot fired now to meet a target, and when it meets it. 24 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -365,6 +377,9 @@ unsafe extern "C" {
     /// In 3D, the height of your underside above the ground.
     #[link_name = "me_altitude"]
     pub fn cy_me_altitude(out: *mut f64) -> i32;
+    /// The walls that stopped or bounced your move in the tick just simulated, reported by the arena (self.wall); zero when none did. Under gravity the ground is not a wall (me.grounded), so z is at most the ceiling's -1 there.
+    #[link_name = "me_wall_contact"]
+    pub fn cy_me_wall_contact(out: *mut Vec3) -> i32;
     /// What the previous tick applied to you.
     #[link_name = "me_applied_v1"]
     pub fn cy_me_applied_v1(out: *mut AppliedV1) -> i32;
@@ -638,6 +653,9 @@ unsafe extern "C" {
     /// How far a point is from the hill's edge, 0 inside; absent while there is none.
     #[link_name = "nav_hill_distance_from"]
     pub fn cy_nav_hill_distance_from(point: *const Vec3, out: *mut f64) -> i32;
+    /// How far the edge of your robot is from the walls: from your position, your radius (hello.robot.radius) and the arena size, nothing the arena reports.
+    #[link_name = "nav_wall_margin_v1"]
+    pub fn cy_nav_wall_margin_v1(out: *mut WallMarginV1) -> i32;
     /// Every pickup on the field.
     #[link_name = "nav_pickups_v1"]
     pub fn cy_nav_pickups_v1(out: *mut PickupV1, capacity: u32, count: *mut u32) -> i32;
@@ -743,6 +761,7 @@ pub use self::cy_tracker_history_v1 as cy_tracker_history;
 pub use self::cy_nav_zone_v1 as cy_nav_zone;
 pub use self::cy_nav_storm_v1 as cy_nav_storm;
 pub use self::cy_nav_hill_v1 as cy_nav_hill;
+pub use self::cy_nav_wall_margin_v1 as cy_nav_wall_margin;
 pub use self::cy_nav_pickups_v1 as cy_nav_pickups;
 pub use self::cy_nav_nearest_pickup_v1 as cy_nav_nearest_pickup;
 pub use self::cy_angles_to_chassis_v1 as cy_angles_to_chassis;
